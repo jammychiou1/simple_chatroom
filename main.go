@@ -1,41 +1,56 @@
 package main
 
 import (
-    "bufio"
     "fmt"
-    "io"
     "log"
     "net"
+    "os"
+    "gorm.io/gorm"
 )
 
-func main() {
-    li, err := net.Listen("tcp", ":8080")
-    if err != nil {
-        log.Fatalln(err)
-    }
+const (
+    WORKERS_COUNT = 2
+)
 
-    defer li.Close()
-
+func worker(id int, assignJob <-chan Client, workerMsg chan<- string, db *gorm.DB) {
+    log.Printf("Worker %d starting\n", id)
     for {
-        conn, err := li.Accept()
-        if err != nil {
-            log.Println(err)
-            continue
-        }
-        io.WriteString(conn, "\nHello from TCP server\n")
-        // fmt.Fprintln(conn, "How is your day?")
-        // fmt.Fprintf(conn, "%v", "Well, I hope!\n\n")
-        go handle(conn)
+        workerMsg <- "ready"
+        job := <- assignJob
+        log.Printf("Worker %d got job\n", id)
+        handleClient(id, job, db)
     }
 }
 
-func handle(conn net.Conn) {
-    scanner := bufio.NewScanner(conn)
-    for scanner.Scan() {
-        ln := scanner.Text()
-        fmt.Println(ln)
-    }
-    defer conn.Close()
+func main() {
+    db := startDB()
 
-    fmt.Println("connection interrupt")
+    listener, err := net.Listen("tcp", fmt.Sprintf(":%s", os.Args[1]))
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer listener.Close()
+
+    assignJob := make(chan Client)
+    workerMsg := make(chan string)
+
+    for i := 0; i < WORKERS_COUNT; i++ {
+        i := i
+        go func() {
+            worker(i, assignJob, workerMsg, db)
+        }()
+    }
+
+    for {
+        <- workerMsg
+        for {
+            conn, err := listener.Accept()
+            if err != nil {
+                log.Println(err)
+                continue
+            }
+            assignJob <- Client{conn: conn}
+            break
+        }
+    }
 }
