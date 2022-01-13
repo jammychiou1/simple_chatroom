@@ -10,6 +10,7 @@ import (
     "log"
     "encoding/base64"
     "github.com/mattn/go-sqlite3"
+    //"strconv"
 )
 
 type Client struct {
@@ -214,6 +215,67 @@ func handleCommand(id int, clnt *Client, db *gorm.DB) (next handleFunc) {
                 continue
             }
             fmt.Fprintf(clnt.w, "ok\n")
+            clnt.w.Flush()
+            continue
+        } else if tokens[0] == "createChatroom" && len(tokens) == 2 {
+            friendNameBytes, err := base64.StdEncoding.DecodeString(tokens[1])
+            if err != nil {
+                fmt.Fprintf(clnt.w, "no\n")
+                clnt.w.Flush()
+                continue
+            }
+            friendName := string(friendNameBytes)
+
+            user := User{ID: clnt.userID}
+            err = db.Transaction(func(tx *gorm.DB) error {
+                var friend User
+                if err := db.Where("username = ?", friendName).Take(&friend).Error; err != nil {
+                    if errors.Is(err, gorm.ErrRecordNotFound) {
+                        return fmt.Errorf("nonexistFriend: %w", err)
+                    }
+                    return fmt.Errorf("unknown: %w", err)
+                }
+                
+                var friends []*User
+                if err := db.Model(&user).Association("Friends").Find(&friends, "friend_id = ?", friend.ID); err != nil {
+                    return fmt.Errorf("unknown: %w", err)
+                }
+                if len(friends) == 0 {
+                    return fmt.Errorf("notFriend")
+                }
+
+                chatroom := Chatroom{Name: "chatroom"}
+                if err := db.Model(&user).Association("Chatrooms").Append(&chatroom); err != nil {
+                    return fmt.Errorf("unknown: %w", err)
+                }
+                if err := db.Model(&friend).Association("Chatrooms").Append(&chatroom); err != nil {
+                    return fmt.Errorf("unknown: %w", err)
+                }
+                return nil
+            })
+            if err != nil {
+                fmt.Fprintf(clnt.w, "failed\n")
+                clnt.w.Flush()
+                log.Println(err)
+                continue
+            }
+            fmt.Fprintf(clnt.w, "ok\n")
+            clnt.w.Flush()
+            continue
+        } else if tokens[0] == "listChatroom" && len(tokens) == 1 {
+            user := User{ID: clnt.userID}
+            var chatrooms []*Chatroom
+            db.Preload("Users").Model(&user).Association("Chatrooms").Find(&chatrooms)
+            fmt.Fprintln(clnt.w, len(chatrooms))
+            log.Printf("Client at Worker %d listChatroom: %v\n", id, len(chatrooms))
+            for _, chatroom := range chatrooms {
+                chatroomUsers := make([]string, len(chatroom.Users))
+                for j, chatroomUser := range chatroom.Users {
+                    chatroomUsers[j] = base64.StdEncoding.EncodeToString([]byte(chatroomUser.Username))
+                }
+                fmt.Fprintf(clnt.w, "%d %s\n", chatroom.ID, strings.Join(chatroomUsers, " "))
+                log.Printf("Client at Worker %d listChatroom: %d %s\n", id, chatroom.ID, strings.Join(chatroomUsers, " "))
+            }
             clnt.w.Flush()
             continue
         }

@@ -14,6 +14,27 @@ type User struct {
     Username string `gorm:"not null;unique"`
     Password string `gorm:"not null"`
     Friends []*User `gorm:"many2many:user_friends"`
+    Chatrooms []*Chatroom `gorm:"many2many:user_chatrooms"`
+}
+
+type Chatroom struct {
+    ID int
+    Users []*User `gorm:"many2many:user_chatrooms"`
+    Messages []Message
+    Files []File
+    Name string `gorm:"many2many:user_chatrooms"`
+}
+
+type Message struct {
+    ID int
+    Content string `gorm:"not null"`
+    ChatroomID int
+}
+
+type File struct {
+    ID int
+    Filename string `gorm:"not null"`
+    ChatroomID int
 }
 
 const (
@@ -37,6 +58,6 @@ func startDB() *gorm.DB {
 		log.Fatal(err)
 	}
 
-    db.AutoMigrate(&User{})
+    db.AutoMigrate(&User{}, &Chatroom{})
     return db
 }
