@@ -120,7 +120,7 @@ func handleCommand(id int, clnt *Client, db *gorm.DB) (next handleFunc) {
             db.Model(&user).Association("Friends").Find(&friends)
             friendNames := make([]string, len(friends))
             for i, friend := range friends {
-                friendNames[i] = friend.Username
+                friendNames[i] = base64.StdEncoding.EncodeToString([]byte(friend.Username))
             }
             log.Printf("Client at Worker %d list friends: %v\n", id, friendNames)
             fmt.Fprintln(clnt.w, strings.Join(friendNames, " "))
