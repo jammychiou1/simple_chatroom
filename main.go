@@ -12,13 +12,14 @@ const (
     WORKERS_COUNT = 2
 )
 
-func worker(id int, assignJob <-chan Client, workerMsg chan<- string, db *gorm.DB) {
+func worker(id int, assignClnt <-chan Client, workerMsg chan<- string, db *gorm.DB) {
     log.Printf("Worker %d starting\n", id)
     for {
         workerMsg <- "ready"
-        job := <- assignJob
+        clnt := <- assignClnt
         log.Printf("Worker %d got job\n", id)
-        handleClient(id, job, db)
+        handleClient(id, clnt, db)
+        log.Printf("Worker %d finished job\n", id)
     }
 }
 
@@ -31,13 +32,13 @@ func main() {
     }
     defer listener.Close()
 
-    assignJob := make(chan Client)
+    assignClnt := make(chan Client)
     workerMsg := make(chan string)
 
     for i := 0; i < WORKERS_COUNT; i++ {
         i := i
         go func() {
-            worker(i, assignJob, workerMsg, db)
+            worker(i, assignClnt, workerMsg, db)
         }()
     }
 
@@ -49,7 +50,7 @@ func main() {
                 log.Println(err)
                 continue
             }
-            assignJob <- Client{conn: conn}
+            assignClnt <- Client{conn: conn}
             break
         }
     }
