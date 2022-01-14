@@ -33,14 +33,23 @@ type Message struct {
 
 type File struct {
     ID int
+    Handle string `gorm:"not null;unique"`
     Filename string `gorm:"not null"`
     ChatroomID int
+    UserID int
+    Uploaded bool `gorm:"default:false"`
+    Filesize int
+    Type int
 }
 
 const (
     DB_FILENAME = "mydb.db"
 )
 
+const (
+    TYPE_FILE = 1
+    TYPE_IMAGE = 2
+)
 func startDB() *gorm.DB {
     newLogger := logger.New(
         log.New(os.Stdout, "\r\n", log.LstdFlags),
@@ -58,6 +67,6 @@ func startDB() *gorm.DB {
 		log.Fatal(err)
 	}
 
-    db.AutoMigrate(&User{}, &Chatroom{}, &Message{})
+    db.AutoMigrate(&User{}, &Chatroom{}, &Message{}, &File{})
     return db
 }

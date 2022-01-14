@@ -6,10 +6,11 @@ import (
     "net"
     "os"
     "gorm.io/gorm"
+    "path/filepath"
 )
 
 const (
-    WORKERS_COUNT = 2
+    WORKERS_COUNT = 100
 )
 
 func worker(id int, assignClnt <-chan Client, workerMsg chan<- string, db *gorm.DB) {
@@ -24,6 +25,11 @@ func worker(id int, assignClnt <-chan Client, workerMsg chan<- string, db *gorm.
 }
 
 func main() {
+    err := os.MkdirAll(filepath.Join(".", "files"), 0755)
+    if err != nil {
+        log.Fatal(err)
+    }
+
     db := startDB()
 
     listener, err := net.Listen("tcp", fmt.Sprintf(":%s", os.Args[1]))
