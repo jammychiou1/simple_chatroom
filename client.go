@@ -10,7 +10,7 @@ import (
     "log"
     "encoding/base64"
     "github.com/mattn/go-sqlite3"
-    //"strconv"
+    "strconv"
 )
 
 type Client struct {
@@ -20,6 +20,7 @@ type Client struct {
 
     username string
     userID int
+    chatroomID int
 }
 
 type handleFunc func (id int, clnt *Client, db *gorm.DB) handleFunc
@@ -227,6 +228,7 @@ func handleCommand(id int, clnt *Client, db *gorm.DB) (next handleFunc) {
             friendName := string(friendNameBytes)
 
             user := User{ID: clnt.userID}
+            chatroom := Chatroom{Name: "chatroom"}
             err = db.Transaction(func(tx *gorm.DB) error {
                 var friend User
                 if err := db.Where("username = ?", friendName).Take(&friend).Error; err != nil {
@@ -244,7 +246,6 @@ func handleCommand(id int, clnt *Client, db *gorm.DB) (next handleFunc) {
                     return fmt.Errorf("notFriend")
                 }
 
-                chatroom := Chatroom{Name: "chatroom"}
                 if err := db.Model(&user).Association("Chatrooms").Append(&chatroom); err != nil {
                     return fmt.Errorf("unknown: %w", err)
                 }
@@ -259,13 +260,16 @@ func handleCommand(id int, clnt *Client, db *gorm.DB) (next handleFunc) {
                 log.Println(err)
                 continue
             }
-            fmt.Fprintf(clnt.w, "ok\n")
+            fmt.Fprintf(clnt.w, "ok %d\n", chatroom.ID)
             clnt.w.Flush()
             continue
         } else if tokens[0] == "listChatroom" && len(tokens) == 1 {
             user := User{ID: clnt.userID}
             var chatrooms []*Chatroom
-            db.Preload("Users").Model(&user).Association("Chatrooms").Find(&chatrooms)
+            if err := db.Preload("Users").Model(&user).Association("Chatrooms").Find(&chatrooms); err != nil {
+                fmt.Fprintln(clnt.w, "")
+                continue
+            }
             fmt.Fprintln(clnt.w, len(chatrooms))
             log.Printf("Client at Worker %d listChatroom: %v\n", id, len(chatrooms))
             for _, chatroom := range chatrooms {
@@ -278,6 +282,86 @@ func handleCommand(id int, clnt *Client, db *gorm.DB) (next handleFunc) {
             }
             clnt.w.Flush()
             continue
+        } else if tokens[0] == "joinChatroom" && len(tokens) == 2 {
+            chatroomID, err := strconv.Atoi(tokens[1])
+            user := User{ID: clnt.userID}
+            if err != nil {
+                fmt.Fprintln(clnt.w, "failed")
+                clnt.w.Flush()
+                log.Println(err)
+                continue
+            }
+            var chatrooms []*Chatroom
+            if err := db.Preload("Users").Model(&user).Association("Chatrooms").Find(&chatrooms, "chatroom_id = ?", chatroomID); err != nil {
+                fmt.Fprintln(clnt.w, "failed")
+                clnt.w.Flush()
+                log.Println(err)
+                continue
+            }
+            if len(chatrooms) != 1 {
+                fmt.Fprintln(clnt.w, "failed")
+                clnt.w.Flush()
+                continue
+            }
+            chatroom := chatrooms[0]
+            chatroomUsers := make([]string, len(chatroom.Users))
+            for j, chatroomUser := range chatroom.Users {
+                chatroomUsers[j] = base64.StdEncoding.EncodeToString([]byte(chatroomUser.Username))
+            }
+            fmt.Fprintf(clnt.w, "ok %s\n", strings.Join(chatroomUsers, " "))
+            log.Printf("Client at Worker %d joinChatroom: %d %s\n", id, chatroom.ID, strings.Join(chatroomUsers, " "))
+            clnt.w.Flush()
+            clnt.chatroomID = chatroom.ID
+            continue
+        } else if tokens[0] == "send" && len(tokens) == 2 {
+            if clnt.chatroomID == -1 {
+                continue
+            }
+            textEnc := tokens[1]
+            chatroom := Chatroom{ID: clnt.chatroomID}
+            text, err := base64.StdEncoding.DecodeString(textEnc)
+            if err != nil {
+                continue
+            }
+            log.Printf("Client at Worker %d sent: %q\n", id, text)
+            message := Message{Content: fmt.Sprintf("text %s", textEnc)}
+            if err := db.Model(&chatroom).Association("Messages").Append(&message); err != nil {
+                log.Println(err)
+                continue
+            }
+            continue
+        } else if tokens[0] == "logs" && len(tokens) == 3 {
+            if clnt.chatroomID == -1 {
+                continue
+            }
+            begin, err1 := strconv.Atoi(tokens[1])
+            end, err2 := strconv.Atoi(tokens[2])
+            if err1 != nil || err2 != nil {
+                continue
+            }
+            var limit int
+            if end == -1 {
+                limit = -1
+            } else {
+                limit = end - begin
+            }
+            offset := begin
+            var messages []Message
+            if err := db.Model(&Message{}).Offset(offset).Limit(limit).Find(&messages, "chatroom_id = ?", clnt.chatroomID).Error; err != nil {
+                log.Println(err)
+                continue
+            }
+            newEnd := begin + len(messages)
+            log.Println(messages)
+            fmt.Fprintf(clnt.w, "%d %d\n", begin, newEnd)
+            log.Printf("Client at %d logs: %d %d\n", id, begin, newEnd)
+            for _, message := range messages {
+                fmt.Fprintf(clnt.w, "%s\n", message.Content)
+                log.Printf("Cleint at %d logs: %s\n", id, message.Content)
+            }
+            clnt.w.Flush()
+            continue
+            
         }
         log.Printf("Client at Worker %d sent unknown command\n", id)
         fmt.Fprintf(clnt.w, "unknown command\n")
@@ -290,6 +374,7 @@ func handleClient(id int, clnt Client, db *gorm.DB) {
     defer clnt.conn.Close()
     clnt.r = bufio.NewReader(clnt.conn)
     clnt.w = bufio.NewWriter(clnt.conn)
+    clnt.chatroomID = -1
     next := handleInit(id, &clnt, db)
     if next == nil {
         return

@@ -58,6 +58,6 @@ func startDB() *gorm.DB {
 		log.Fatal(err)
 	}
 
-    db.AutoMigrate(&User{}, &Chatroom{})
+    db.AutoMigrate(&User{}, &Chatroom{}, &Message{})
     return db
 }
