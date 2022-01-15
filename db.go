@@ -50,6 +50,15 @@ const (
     TYPE_FILE = 1
     TYPE_IMAGE = 2
 )
+
+func typeName(tp int) string {
+    if tp == 1 {
+        return "file"
+    } else {
+        return "image"
+    }
+}
+
 func startDB() *gorm.DB {
     newLogger := logger.New(
         log.New(os.Stdout, "\r\n", log.LstdFlags),

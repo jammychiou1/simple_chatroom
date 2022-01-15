@@ -37,6 +37,109 @@ func randomHex(n int) string {
     return hex.EncodeToString(bytes)
 }
 
+func upload(workerID int, clnt *Client, db *gorm.DB, tokens []string, tp int) {
+    handle := tokens[1]
+    filename, err := base64.StdEncoding.DecodeString(tokens[2])
+    if err != nil {
+        fmt.Fprintln(clnt.w, "failed")
+        clnt.w.Flush()
+        return
+    }
+    filesizeInt, err := strconv.Atoi(tokens[3])
+    filesize := int64(filesizeInt)
+    if err != nil {
+        fmt.Fprintln(clnt.w, "failed")
+        clnt.w.Flush()
+        return
+    }
+    var file File
+    if err := db.Model(&File{}).Take(&file, "handle = ? AND type = ?", handle, tp).Error; err != nil {
+        if errors.Is(err, gorm.ErrRecordNotFound) {
+            log.Printf("Client at Worker %d nonexist handle\n", workerID)
+            fmt.Fprintln(clnt.w, "failed")
+            clnt.w.Flush()
+            return
+        } else {
+            log.Printf("Worker %d got unkown db error %v\n", workerID, err)
+            fmt.Fprintln(clnt.w, "failed")
+            clnt.w.Flush()
+            return
+        }
+    }
+    f, err := os.Create(fmt.Sprintf("./files/%s", handle))
+    if err != nil {
+        fmt.Fprintln(clnt.w, "failed")
+        clnt.w.Flush()
+        return
+    }
+    fmt.Fprintln(clnt.w, "ok")
+    clnt.w.Flush()
+    written, err := io.CopyN(f, clnt.r, filesize)
+    f.Close()
+    if err != nil || written != filesize {
+        fmt.Fprintln(clnt.w, "failed")
+        clnt.w.Flush()
+        return
+    }
+    file.Filename = string(filename)
+    file.Uploaded = true
+    file.Filesize = filesizeInt
+    if err := db.Save(&file).Error; err != nil {
+        log.Printf("Worker %d got unkown db error %v\n", workerID, err)
+        fmt.Fprintln(clnt.w, "failed")
+        clnt.w.Flush()
+        return
+    }
+    fmt.Fprintln(clnt.w, "ok")
+    clnt.w.Flush()
+    //user := User{ID: file.UserID}
+    var user User
+    if err := db.Model(&User{}).Take(&user, &User{ID: file.UserID}).Error; err != nil {
+        log.Println("upload find user", err)
+        return
+    }
+    message := Message{Content: fmt.Sprintf("%s %s %s %s", base64.StdEncoding.EncodeToString([]byte(user.Username)), typeName(tp), base64.StdEncoding.EncodeToString([]byte(file.Filename)), file.Handle)}
+    chatroom := Chatroom{ID: file.ChatroomID}
+    if err := db.Model(&chatroom).Association("Messages").Append(&message); err != nil {
+        log.Println("upload append message", err)
+        return
+    }
+    return
+}
+
+func download(workerID int, clnt *Client, db *gorm.DB, tokens []string, tp int) {
+    handle := tokens[1]
+    var file File
+    if err := db.Model(&File{}).Take(&file, "handle = ? AND type = ?", handle, tp).Error; err != nil {
+        if errors.Is(err, gorm.ErrRecordNotFound) {
+            log.Printf("Client at Worker %d nonexist handle\n", workerID)
+            fmt.Fprintln(clnt.w, "failed")
+            clnt.w.Flush()
+            return
+        } else {
+            log.Printf("Worker %d got unkown db error %v\n", workerID, err)
+            fmt.Fprintln(clnt.w, "failed")
+            clnt.w.Flush()
+            return
+        }
+    }
+    f, err := os.Open(fmt.Sprintf("./files/%s", handle))
+    if err != nil {
+        fmt.Fprintln(clnt.w, "failed")
+        clnt.w.Flush()
+        return
+    }
+    fmt.Fprintf(clnt.w, "ok %s %d\n", base64.StdEncoding.EncodeToString([]byte(file.Filename)), file.Filesize)
+    clnt.w.Flush()
+    written, err := io.CopyN(clnt.w, f, int64(file.Filesize))
+    clnt.w.Flush()
+    f.Close()
+    if err != nil || written != int64(file.Filesize) {
+        return
+    }
+    return
+}
+
 func handleInit(workerID int, clnt *Client, db *gorm.DB) (next handleFunc) {
     for {
         ln, err := clnt.r.ReadString('\n')
@@ -110,108 +213,16 @@ func handleInit(workerID int, clnt *Client, db *gorm.DB) (next handleFunc) {
             clnt.userID = user.ID
             break
         } else if tokens[0] == "uploadFile" && len(tokens) == 4 {
-            handle := tokens[1]
-            filename, err := base64.StdEncoding.DecodeString(tokens[2])
-            if err != nil {
-                fmt.Fprintln(clnt.w, "failed")
-                clnt.w.Flush()
-                return nil
-            }
-            filesizeInt, err := strconv.Atoi(tokens[3])
-            filesize := int64(filesizeInt)
-            if err != nil {
-                fmt.Fprintln(clnt.w, "failed")
-                clnt.w.Flush()
-                return nil
-            }
-            var file File
-            if err := db.Model(&File{}).Take(&file, "handle = ?", handle).Error; err != nil {
-                if errors.Is(err, gorm.ErrRecordNotFound) {
-                    log.Printf("Client at Worker %d nonexist handle\n", workerID)
-                    fmt.Fprintln(clnt.w, "failed")
-                    clnt.w.Flush()
-                    return nil
-                } else {
-                    log.Printf("Worker %d got unkown db error %v\n", workerID, err)
-                    fmt.Fprintln(clnt.w, "failed")
-                    clnt.w.Flush()
-                    return nil
-                }
-            }
-            f, err := os.Create(fmt.Sprintf("./files/%s", handle))
-            if err != nil {
-                fmt.Fprintln(clnt.w, "failed")
-                clnt.w.Flush()
-                return nil
-            }
-            fmt.Fprintln(clnt.w, "ok")
-            clnt.w.Flush()
-            written, err := io.CopyN(f, clnt.r, filesize)
-            f.Close()
-            if err != nil || written != filesize {
-                fmt.Fprintln(clnt.w, "failed")
-                clnt.w.Flush()
-                return nil
-            }
-            file.Filename = string(filename)
-            file.Uploaded = true
-            file.Filesize = filesizeInt
-            if err := db.Save(&file).Error; err != nil {
-                log.Printf("Worker %d got unkown db error %v\n", workerID, err)
-                fmt.Fprintln(clnt.w, "failed")
-                clnt.w.Flush()
-                return nil
-            }
-            fmt.Fprintln(clnt.w, "ok")
-            clnt.w.Flush()
-            //user := User{ID: file.UserID}
-            var user User
-            if err := db.Model(&User{}).Take(&user, &User{ID: file.UserID}).Error; err != nil {
-                log.Println("file find user", err)
-                return nil
-            }
-            message := Message{Content: fmt.Sprintf("%s file %s %s", base64.StdEncoding.EncodeToString([]byte(user.Username)), base64.StdEncoding.EncodeToString([]byte(file.Filename)), file.Handle)}
-            chatroom := Chatroom{ID: file.ChatroomID}
-            if err := db.Model(&chatroom).Association("Messages").Append(&message); err != nil {
-                log.Println("file append message", err)
-                return nil
-            }
+            upload(workerID, clnt, db, tokens, TYPE_FILE)
+            return nil
+        } else if tokens[0] == "uploadImage" && len(tokens) == 4 {
+            upload(workerID, clnt, db, tokens, TYPE_IMAGE)
             return nil
         } else if tokens[0] == "downloadFile" && len(tokens) == 2 {
-            handle := tokens[1]
-            if err != nil {
-                fmt.Fprintln(clnt.w, "failed")
-                clnt.w.Flush()
-                return nil
-            }
-            var file File
-            if err := db.Model(&File{}).Take(&file, "handle = ?", handle).Error; err != nil {
-                if errors.Is(err, gorm.ErrRecordNotFound) {
-                    log.Printf("Client at Worker %d nonexist handle\n", workerID)
-                    fmt.Fprintln(clnt.w, "failed")
-                    clnt.w.Flush()
-                    return nil
-                } else {
-                    log.Printf("Worker %d got unkown db error %v\n", workerID, err)
-                    fmt.Fprintln(clnt.w, "failed")
-                    clnt.w.Flush()
-                    return nil
-                }
-            }
-            f, err := os.Open(fmt.Sprintf("./files/%s", handle))
-            if err != nil {
-                fmt.Fprintln(clnt.w, "failed")
-                clnt.w.Flush()
-                return nil
-            }
-            fmt.Fprintf(clnt.w, "ok %s %d\n", base64.StdEncoding.EncodeToString([]byte(file.Filename)), file.Filesize)
-            clnt.w.Flush()
-            written, err := io.CopyN(clnt.w, f, int64(file.Filesize))
-            clnt.w.Flush()
-            f.Close()
-            if err != nil || written != int64(file.Filesize) {
-                return nil
-            }
+            download(workerID, clnt, db, tokens, TYPE_FILE)
+            return nil
+        } else if tokens[0] == "downloadImage" && len(tokens) == 2 {
+            download(workerID, clnt, db, tokens, TYPE_IMAGE)
             return nil
         }
         log.Printf("Client at Worker %d sent unknown command\n", workerID)
@@ -220,6 +231,61 @@ func handleInit(workerID int, clnt *Client, db *gorm.DB) (next handleFunc) {
         return nil
     }
     return handleCommand
+}
+
+func send(workerID int, clnt *Client, db *gorm.DB, tp int) {
+    if clnt.chatroomID == -1 {
+        fmt.Fprintln(clnt.w, "failed")
+        clnt.w.Flush()
+        return
+    }
+    chatroom := Chatroom{ID: clnt.chatroomID}
+    var handle string
+    failed := false
+    for {
+        handle = randomHex(32)
+        file := File{Type: tp, Handle: handle, UserID: clnt.userID}
+        if err := db.Model(&chatroom).Association("Files").Append(&file); err != nil {
+            var sqliteErr sqlite3.Error
+            if errors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrConstraint {
+                log.Printf("Client at Worker %d randomize duplicate handle\n", workerID)
+                continue
+            } else {
+                log.Printf("Worker %d got unkown db error %v\n", workerID, err)
+                failed = true
+                break
+            }
+        }
+        break
+    }
+    if failed {
+        fmt.Fprintf(clnt.w, "failed\n")
+        clnt.w.Flush()
+        return
+    }
+    fmt.Fprintf(clnt.w, "ok %s\n", handle)
+    clnt.w.Flush()
+    return
+}
+
+func list(workerID int, clnt *Client, db *gorm.DB, tp int) {
+    if clnt.chatroomID == -1 {
+        return
+    }
+    var files []File
+    if err := db.Model(&File{}).Find(&files, "chatroom_id = ? AND type = ?", clnt.chatroomID, tp).Error; err != nil {
+        log.Println(err)
+        return
+    }
+    log.Println(files)
+    fmt.Fprintf(clnt.w, "%d\n", len(files))
+    log.Printf("Client at %d list: %d\n", workerID, len(files))
+    for _, file := range files {
+        fmt.Fprintf(clnt.w, "%s %s\n", base64.StdEncoding.EncodeToString([]byte(file.Filename)), file.Handle)
+        log.Printf("Client at %d list: %s %s\n", workerID, base64.StdEncoding.EncodeToString([]byte(file.Filename)), file.Handle)
+    }
+    clnt.w.Flush()
+    return
 }
 
 func handleCommand(workerID int, clnt *Client, db *gorm.DB) (next handleFunc) {
@@ -311,14 +377,6 @@ func handleCommand(workerID int, clnt *Client, db *gorm.DB) (next handleFunc) {
                     }
                     return fmt.Errorf("unknown: %w", err)
                 }
-                
-                //var friends []*User
-                //if err := db.Model(&user).Association("Friends").Find(&friends, "friend_id = ?", friend.ID); err != nil {
-                //    return fmt.Errorf("unknown: %w", err)
-                //}
-                //if len(friends) >= 1 {
-                //    return fmt.Errorf("addedFriend")
-                //}
 
                 if err := db.Model(&user).Association("Friends").Delete(&friend); err != nil {
                     return fmt.Errorf("unknown: %w", err)
@@ -478,55 +536,16 @@ func handleCommand(workerID int, clnt *Client, db *gorm.DB) (next handleFunc) {
             clnt.w.Flush()
             continue
         } else if tokens[0] == "sendFile" && len(tokens) == 1 {
-            if clnt.chatroomID == -1 {
-                fmt.Fprintln(clnt.w, "failed")
-                clnt.w.Flush()
-                continue
-            }
-            chatroom := Chatroom{ID: clnt.chatroomID}
-            var handle string
-            failed := false
-            for {
-                handle = randomHex(32)
-                file := File{Type: TYPE_FILE, Handle: handle, UserID: clnt.userID}
-                if err := db.Model(&chatroom).Association("Files").Append(&file); err != nil {
-                    var sqliteErr sqlite3.Error
-                    if errors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrConstraint {
-                        log.Printf("Client at Worker %d randomize duplicate handle\n", workerID)
-                        continue
-                    } else {
-                        log.Printf("Worker %d got unkown db error %v\n", workerID, err)
-                        failed = true
-                        break
-                    }
-                }
-                break
-            }
-            if failed {
-                fmt.Fprintf(clnt.w, "failed\n")
-                clnt.w.Flush()
-                continue
-            }
-            fmt.Fprintf(clnt.w, "ok %s\n", handle)
-            clnt.w.Flush()
+            send(workerID, clnt, db, TYPE_FILE)
+            continue
+        } else if tokens[0] == "sendImage" && len(tokens) == 1 {
+            send(workerID, clnt, db, TYPE_IMAGE)
             continue
         } else if tokens[0] == "listFiles" && len(tokens) == 1 {
-            if clnt.chatroomID == -1 {
-                continue
-            }
-            var files []File
-            if err := db.Model(&File{}).Find(&files, "chatroom_id = ?", clnt.chatroomID).Error; err != nil {
-                log.Println(err)
-                continue
-            }
-            log.Println(files)
-            fmt.Fprintf(clnt.w, "%d\n", len(files))
-            log.Printf("Client at %d listFiles: %d\n", workerID, len(files))
-            for _, file := range files {
-                fmt.Fprintf(clnt.w, "%s %s\n", base64.StdEncoding.EncodeToString([]byte(file.Filename)), file.Handle)
-                log.Printf("Client at %d listFiles: %s %s\n", workerID, base64.StdEncoding.EncodeToString([]byte(file.Filename)), file.Handle)
-            }
-            clnt.w.Flush()
+            list(workerID, clnt, db, TYPE_FILE)
+            continue
+        } else if tokens[0] == "listImages" && len(tokens) == 1 {
+            list(workerID, clnt, db, TYPE_IMAGE)
             continue
         }
         log.Printf("Client at Worker %d sent unknown command\n", workerID)
